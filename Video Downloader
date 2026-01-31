@@ -1,0 +1,573 @@
+"""
+VideoDown Backend API
+A Flask-based backend for downloading videos from various social media platforms.
+"""
+
+import os
+import re
+import json
+import logging
+import tempfile
+import requests
+from urllib.parse import urlparse, parse_qs
+from flask import Flask, request, jsonify, send_file, Response
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["*"],
+        "methods": ["POST", "GET", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
+
+# Configuration
+TEMP_DIR = tempfile.gettempdir()
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+ALLOWED_EXTENSIONS = {'mp4', 'mp3', 'webm'}
+
+# API Keys (use environment variables in production)
+RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY', '')
+
+
+def is_valid_url(url):
+    """Validate if the provided string is a valid URL."""
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc])
+    except:
+        return False
+
+
+def detect_platform(url):
+    """Detect the social media platform from the URL."""
+    url_lower = url.lower()
+    
+    if 'tiktok.com' in url_lower or 'vm.tiktok' in url_lower:
+        return 'tiktok'
+    elif 'instagram.com' in url_lower or 'instagr.am' in url_lower:
+        return 'instagram'
+    elif 'twitter.com' in url_lower or 'x.com' in url_lower or 't.co' in url_lower:
+        return 'twitter'
+    elif 'pinterest.com' in url_lower or 'pin.it' in url_lower:
+        return 'pinterest'
+    
+    return 'unknown'
+
+
+def sanitize_filename(filename):
+    """Sanitize filename to prevent security issues."""
+    filename = secure_filename(filename)
+    filename = re.sub(r'[^\w\s.-]', '', filename)
+    return filename[:100]  # Limit length
+
+
+class VideoDownloader:
+    """Base class for video downloaders."""
+    
+    @staticmethod
+    def download_tiktok(url):
+        """Download TikTok video using available methods."""
+        try:
+            # Method 1: Using RapidAPI TikTok downloader
+            if RAPIDAPI_KEY:
+                return VideoDownloader._download_tiktok_rapidapi(url)
+            
+            # Method 2: Using alternative API
+            return VideoDownloader._download_tiktok_alternative(url)
+            
+        except Exception as e:
+            logger.error(f"TikTok download error: {str(e)}")
+            return None
+    
+    @staticmethod
+    def _download_tiktok_rapidapi(url):
+        """Download TikTok video using RapidAPI."""
+        api_url = "https://tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com/vid/index"
+        
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com"
+        }
+        
+        params = {"url": url}
+        
+        response = requests.get(api_url, headers=headers, params=params, timeout=30)
+        data = response.json()
+        
+        if response.status_code == 200 and data.get('video'):
+            return {
+                'video_url': data.get('video', [{}])[0] if isinstance(data.get('video'), list) else data.get('video'),
+                'audio_url': data.get('music', [{}])[0] if isinstance(data.get('music'), list) else data.get('music'),
+                'title': data.get('description', ['TikTok Video'])[0] if isinstance(data.get('description'), list) else data.get('description', 'TikTok Video'),
+                'author': data.get('author', ['Unknown'])[0] if isinstance(data.get('author'), list) else data.get('author', 'Unknown'),
+                'thumbnail': data.get('cover', [''])[0] if isinstance(data.get('cover'), list) else data.get('cover', ''),
+            }
+        
+        return None
+    
+    @staticmethod
+    def _download_tiktok_alternative(url):
+        """Alternative TikTok download method."""
+        try:
+            # Using ssstik.io API
+            session = requests.Session()
+            
+            # Get the download page
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            # Extract video ID
+            video_id = None
+            patterns = [
+                r'/video/(\d+)',
+                r'/v/(\d+)',
+                r'vm\.tiktok\.com/(\w+)',
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, url)
+                if match:
+                    video_id = match.group(1)
+                    break
+            
+            if not video_id:
+                return None
+            
+            # Return a direct download link format
+            return {
+                'video_url': f'https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/play/?video_id={video_id}',
+                'audio_url': None,
+                'title': 'TikTok Video',
+                'author': 'Unknown',
+                'thumbnail': '',
+            }
+            
+        except Exception as e:
+            logger.error(f"Alternative TikTok download error: {str(e)}")
+            return None
+    
+    @staticmethod
+    def download_instagram(url):
+        """Download Instagram video."""
+        try:
+            if RAPIDAPI_KEY:
+                return VideoDownloader._download_instagram_rapidapi(url)
+            
+            return VideoDownloader._download_instagram_alternative(url)
+            
+        except Exception as e:
+            logger.error(f"Instagram download error: {str(e)}")
+            return None
+    
+    @staticmethod
+    def _download_instagram_rapidapi(url):
+        """Download Instagram video using RapidAPI."""
+        api_url = "https://instagram-downloader-download-instagram-videos-stories.p.rapidapi.com/index"
+        
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "instagram-downloader-download-instagram-videos-stories.p.rapidapi.com"
+        }
+        
+        params = {"url": url}
+        
+        response = requests.get(api_url, headers=headers, params=params, timeout=30)
+        data = response.json()
+        
+        if response.status_code == 200:
+            media = data.get('media', '')
+            if media:
+                return {
+                    'video_url': media,
+                    'audio_url': None,
+                    'title': data.get('title', 'Instagram Video'),
+                    'author': data.get('username', 'Unknown'),
+                    'thumbnail': data.get('cover', ''),
+                }
+        
+        return None
+    
+    @staticmethod
+    def _download_instagram_alternative(url):
+        """Alternative Instagram download method."""
+        try:
+            # Using scrapeloop or similar service
+            api_url = "https://api.scrapeloop.com/instagram/media"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            params = {'url': url}
+            
+            response = requests.get(api_url, headers=headers, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                video_url = data.get('video_url') or data.get('media_url')
+                
+                if video_url:
+                    return {
+                        'video_url': video_url,
+                        'audio_url': None,
+                        'title': data.get('caption', 'Instagram Video')[:100],
+                        'author': data.get('username', 'Unknown'),
+                        'thumbnail': data.get('thumbnail', ''),
+                    }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Alternative Instagram download error: {str(e)}")
+            return None
+    
+    @staticmethod
+    def download_twitter(url):
+        """Download Twitter/X video."""
+        try:
+            if RAPIDAPI_KEY:
+                return VideoDownloader._download_twitter_rapidapi(url)
+            
+            return VideoDownloader._download_twitter_alternative(url)
+            
+        except Exception as e:
+            logger.error(f"Twitter download error: {str(e)}")
+            return None
+    
+    @staticmethod
+    def _download_twitter_rapidapi(url):
+        """Download Twitter video using RapidAPI."""
+        api_url = "https://twitter-downloader-download-twitter-videos-gifs-and-images.p.rapidapi.com/status"
+        
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "twitter-downloader-download-twitter-videos-gifs-and-images.p.rapidapi.com"
+        }
+        
+        # Extract tweet ID
+        tweet_id = None
+        patterns = [
+            r'/status/(\d+)',
+            r'twitter\.com/\w+/status/(\d+)',
+            r'x\.com/\w+/status/(\d+)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                tweet_id = match.group(1)
+                break
+        
+        if not tweet_id:
+            return None
+        
+        params = {"id": tweet_id}
+        
+        response = requests.get(api_url, headers=headers, params=params, timeout=30)
+        data = response.json()
+        
+        if response.status_code == 200:
+            media = data.get('media', [])
+            if media and len(media) > 0:
+                video = media[0]
+                variants = video.get('variants', [])
+                
+                # Get highest quality video
+                best_variant = None
+                for variant in variants:
+                    if variant.get('content_type') == 'video/mp4':
+                        if not best_variant or variant.get('bitrate', 0) > best_variant.get('bitrate', 0):
+                            best_variant = variant
+                
+                if best_variant:
+                    return {
+                        'video_url': best_variant.get('url'),
+                        'audio_url': None,
+                        'title': data.get('text', 'Twitter Video')[:100],
+                        'author': data.get('author', {}).get('name', 'Unknown'),
+                        'thumbnail': video.get('thumbnail', ''),
+                    }
+        
+        return None
+    
+    @staticmethod
+    def _download_twitter_alternative(url):
+        """Alternative Twitter download method."""
+        try:
+            # Using vxtwitter or similar service
+            # Replace twitter.com/x.com with vxtwitter.com for direct video links
+            vxtwitter_url = url.replace('twitter.com', 'vxtwitter.com').replace('x.com', 'vxtwitter.com')
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            response = requests.get(vxtwitter_url, headers=headers, timeout=30, allow_redirects=True)
+            
+            # Extract video URL from the response
+            video_match = re.search(r'video_url["\']?\s*[:=]\s*["\']([^"\']+)', response.text)
+            if video_match:
+                video_url = video_match.group(1).replace('\\/', '/')
+                
+                return {
+                    'video_url': video_url,
+                    'audio_url': None,
+                    'title': 'Twitter Video',
+                    'author': 'Unknown',
+                    'thumbnail': '',
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Alternative Twitter download error: {str(e)}")
+            return None
+    
+    @staticmethod
+    def download_pinterest(url):
+        """Download Pinterest video."""
+        try:
+            if RAPIDAPI_KEY:
+                return VideoDownloader._download_pinterest_rapidapi(url)
+            
+            return VideoDownloader._download_pinterest_alternative(url)
+            
+        except Exception as e:
+            logger.error(f"Pinterest download error: {str(e)}")
+            return None
+    
+    @staticmethod
+    def _download_pinterest_rapidapi(url):
+        """Download Pinterest video using RapidAPI."""
+        api_url = "https://pinterest-downloader-download-pinterest-image-video-and-reels.p.rapidapi.com/getVideo"
+        
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "pinterest-downloader-download-pinterest-image-video-and-reels.p.rapidapi.com"
+        }
+        
+        params = {"url": url}
+        
+        response = requests.get(api_url, headers=headers, params=params, timeout=30)
+        data = response.json()
+        
+        if response.status_code == 200:
+            video_url = data.get('videoUrl') or data.get('url')
+            if video_url:
+                return {
+                    'video_url': video_url,
+                    'audio_url': None,
+                    'title': data.get('title', 'Pinterest Video')[:100],
+                    'author': data.get('author', 'Unknown'),
+                    'thumbnail': data.get('thumbnail', ''),
+                }
+        
+        return None
+    
+    @staticmethod
+    def _download_pinterest_alternative(url):
+        """Alternative Pinterest download method."""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            
+            # Extract video URL from page
+            video_match = re.search(r'"url":"(https://v\.pinimg\.com/[^"]+)"', response.text)
+            if video_match:
+                video_url = video_match.group(1).replace('\\/', '/')
+                
+                # Extract title
+                title_match = re.search(r'"title":"([^"]+)"', response.text)
+                title = title_match.group(1) if title_match else 'Pinterest Video'
+                
+                return {
+                    'video_url': video_url,
+                    'audio_url': None,
+                    'title': title[:100],
+                    'author': 'Unknown',
+                    'thumbnail': '',
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Alternative Pinterest download error: {str(e)}")
+            return None
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint."""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'VideoDown API',
+        'version': '1.0.0'
+    })
+
+
+@app.route('/api/download', methods=['POST', 'OPTIONS'])
+def download_video():
+    """Main download endpoint."""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No data provided'
+            }), 400
+        
+        url = data.get('url', '').strip()
+        platform = data.get('platform', '').strip()
+        
+        # Validate URL
+        if not url:
+            return jsonify({
+                'success': False,
+                'error': 'URL is required'
+            }), 400
+        
+        if not is_valid_url(url):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid URL format'
+            }), 400
+        
+        # Auto-detect platform if not provided
+        if not platform or platform == 'unknown':
+            platform = detect_platform(url)
+        
+        if platform == 'unknown':
+            return jsonify({
+                'success': False,
+                'error': 'Unsupported platform. Supported: TikTok, Instagram, X (Twitter), Pinterest'
+            }), 400
+        
+        logger.info(f"Processing {platform} download: {url}")
+        
+        # Download based on platform
+        downloader = VideoDownloader()
+        result = None
+        
+        if platform == 'tiktok':
+            result = downloader.download_tiktok(url)
+        elif platform == 'instagram':
+            result = downloader.download_instagram(url)
+        elif platform == 'twitter':
+            result = downloader.download_twitter(url)
+        elif platform == 'pinterest':
+            result = downloader.download_pinterest(url)
+        
+        if not result or not result.get('video_url'):
+            return jsonify({
+                'success': False,
+                'error': 'Failed to extract video. The video may be private, deleted, or the platform may have changed their API.'
+            }), 400
+        
+        return jsonify({
+            'success': True,
+            'videoUrl': result.get('video_url'),
+            'audioUrl': result.get('audio_url'),
+            'videoInfo': {
+                'title': result.get('title', 'Video'),
+                'author': result.get('author', 'Unknown'),
+                'thumbnail': result.get('thumbnail', ''),
+                'platform': platform,
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Download error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Server error: {str(e)}'
+        }), 500
+
+
+@app.route('/api/proxy', methods=['GET'])
+def proxy_video():
+    """Proxy video download to bypass CORS."""
+    video_url = request.args.get('url')
+    
+    if not video_url:
+        return jsonify({'error': 'URL required'}), 400
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(video_url, headers=headers, stream=True, timeout=60)
+        
+        return Response(
+            response.iter_content(chunk_size=8192),
+            content_type=response.headers.get('content-type', 'video/mp4'),
+            headers={
+                'Content-Disposition': f'attachment; filename="video.mp4"',
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Proxy error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/platforms', methods=['GET'])
+def get_platforms():
+    """Get supported platforms."""
+    return jsonify({
+        'platforms': [
+            {
+                'id': 'tiktok',
+                'name': 'TikTok',
+                'icon': '🎵',
+                'supported': True,
+                'features': ['No watermark', 'HD quality', 'Audio extraction']
+            },
+            {
+                'id': 'instagram',
+                'name': 'Instagram',
+                'icon': '📸',
+                'supported': True,
+                'features': ['Reels', 'Posts', 'Stories']
+            },
+            {
+                'id': 'twitter',
+                'name': 'X (Twitter)',
+                'icon': '🐦',
+                'supported': True,
+                'features': ['Video posts', 'Media content']
+            },
+            {
+                'id': 'pinterest',
+                'name': 'Pinterest',
+                'icon': '📌',
+                'supported': True,
+                'features': ['Video Pins', 'Idea Pins']
+            }
+        ]
+    })
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
+    app.run(host='0.0.0.0', port=port, debug=debug)
